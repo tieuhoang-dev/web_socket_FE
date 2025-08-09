@@ -5,14 +5,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { FiImage, FiSend, FiDownload } from 'react-icons/fi';
 import { Menu } from '@headlessui/react';
 import { FiMoreVertical } from 'react-icons/fi';
+import { FiPlay, FiPause } from "react-icons/fi";
 
 
 type Message = {
-  id: string | number;
+  id?: string | number;
   from: string;
   to: string;
   content: string;
   type: string;
+  tempId?: string; // Chỉ dùng trong FE, không gửi đi
 };
 
 type Contact = {
@@ -47,6 +49,15 @@ export default function ChatBoxPage() {
   const [searchResults, setSearchResults] = useState<Contact[]>([]);
   const searchDebounceRef = useRef<number | null>(null);
   const listToShow = searchResults.length > 0 ? searchResults : contacts;
+  const toUserRef = useRef(toUser);
+  useEffect(() => {
+    toUserRef.current = toUser;
+  }, [toUser]);
+
+  const currentUserRef = useRef(currentUser);
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   useEffect(() => {
     if (!token) {
@@ -75,7 +86,6 @@ export default function ChatBoxPage() {
         }));
         socket?.send(JSON.stringify({ type: 'ping' }));
 
-        // Sau đó cứ mỗi 30s gửi ping
         pingInterval = setInterval(() => {
           if (socket?.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: 'ping' }));
@@ -86,118 +96,145 @@ export default function ChatBoxPage() {
       socket.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
+          const cu = currentUserRef.current;
+          const tu = toUserRef.current;
 
-          if (['text', 'image', 'video', 'voice', 'file'].includes(msg.type)) {
-            const isCurrentConversation =
-              (msg.from === toUser && msg.to === currentUser) ||
-              (msg.to === toUser && msg.from === currentUser);
+          if (['text', 'image', 'video', 'voice', 'audio', 'file'].includes(msg.type)) {
+            const preview = msg.type === 'text' ? msg.content : `[${msg.type}]`;
+            const now = Date.now();
 
-            if (isCurrentConversation) {
-              setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
-            }
+            if (msg.from === cu && msg.tempId) {
+              // Replace tempId
+              setMessages(prev => {
+                const withoutDup = prev.filter(m => m.id !== msg.id);
+                return withoutDup.map(m =>
+                  m.id === msg.tempId ? { ...m, id: msg.id } : m
+                );
+              });
 
-            setContacts(prev => {
-              const preview = msg.type === 'text' ? msg.content : `[${msg.type}]`;
-              const now = Date.now();
-              const idx = prev.findIndex(c => c.username === msg.from);
-
-              let updated = [...prev];
-              if (idx >= 0) {
-                const updatedContact = {
-                  ...updated[idx],
-                  last_message: preview,
-                  last_message_at: now,
-                  unread_count: (toUser !== msg.from)
-                    ? ((updated[idx].unread_count || 0) + 1)
-                    : 0
-                };
-                updated[idx] = updatedContact;
-
-                if (toUser !== msg.from) {
-                  updated.splice(idx, 1);
-                  updated.unshift(updatedContact);
-                }
-              } else {
-                updated.unshift({
-                  username: msg.from,
-                  avatar: DEFAULT_AVATAR,
-                  last_message: preview,
-                  last_message_at: now,
-                  unread_count: (toUser !== msg.from) ? 1 : 0
+              // Update contact nếu không phải gửi cho chính mình
+              if (msg.to !== cu) {
+                setContacts(prev => {
+                  const idx = prev.findIndex(c => c.username === msg.to);
+                  let updated = [...prev];
+                  if (idx >= 0) {
+                    const updatedContact = {
+                      ...updated[idx],
+                      last_message: preview,
+                      last_message_at: now,
+                    };
+                    updated.splice(idx, 1);
+                    updated.unshift(updatedContact);
+                  } else {
+                    updated.unshift({
+                      username: msg.to,
+                      avatar: DEFAULT_AVATAR,
+                      last_message: preview,
+                      last_message_at: now,
+                      unread_count: 0
+                    });
+                  }
+                  return updated;
                 });
               }
-              return updated;
-            });
-          }
 
-          if (msg.type === 'contacts') {
-            const normalized = msg.contacts.map((c: any) => ({
-              username: c.username || c.Username || '',
-              avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
-            }));
+              return; // Quan trọng: không cho chạy tiếp
+            } else {
+              // 💡 Xử lý tin từ người khác
+              const belongsToCurrentConversation =
+                (msg.from === tu && msg.to === cu) || (msg.from === cu && msg.to === tu);
 
-            setContacts((prev) => {
-              const existingUsernames = new Set(prev.map((p) => p.username));
-              const merged = [...prev];
-              normalized.forEach((contact: Contact) => {
-                if (!existingUsernames.has(contact.username)) {
-                  merged.push(contact);
+              if (belongsToCurrentConversation) {
+                setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
+              }
+
+              // Update contact cho người gửi tin
+              setContacts(prev => {
+                const idx = prev.findIndex(c => c.username === msg.from);
+                let updated = [...prev];
+                if (idx >= 0) {
+                  const updatedContact = {
+                    ...updated[idx],
+                    last_message: preview,
+                    last_message_at: now,
+                    avatar: msg.avatar || updated[idx].avatar,
+                    unread_count: (tu !== msg.from)
+                      ? ((updated[idx] as any).unread_count || 0) + 1
+                      : 0
+                  };
+                  updated.splice(idx, 1);
+                  updated.unshift(updatedContact);
+                } else {
+                  updated.unshift({
+                    username: msg.from,
+                    avatar: msg.avatar || DEFAULT_AVATAR,
+                    last_message: preview,
+                    last_message_at: now,
+                    unread_count: (tu !== msg.from) ? 1 : 0
+                  });
                 }
+                return updated;
               });
-              return merged;
-            });
-          }
-
-
-          if (msg.type === 'history') {
-            const history = msg.messages.map((m: any) => ({
-              ...m,
-              id: m.id || uuidv4(),
-            }));
-            setMessages(history);
-          }
-
-          if (msg.type === 'message_deleted') {
-            const idsToDelete = msg.message_ids || [];
-            setMessages((prev) =>
-              prev.map((m) =>
-                idsToDelete.includes(Number(m.id))
-                  ? { ...m, type: 'deleted', content: '' }
-                  : m
-              )
-            );
-          }
-          if (msg.type === 'typing') {
-            if (msg.from && msg.from !== currentUser) {
-              setTypingUser(msg.from);
-
-              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-              typingTimeoutRef.current = setTimeout(() => {
-                setTypingUser(null);
-              }, 3000);
             }
           }
-          if (msg.type === 'message_deleted') {
-            setMessages(prev =>
-              prev.map(m =>
-                msg.message_ids.includes(m.id)
-                  ? { ...m, type: 'deleted', content: '' }
-                  : m
-              )
-            );
+          if (msg.type === 'contacts') {
+            const normalized = (msg.contacts || []).map((c: any) => ({
+              username: c.username || c.Username || '',
+              avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
+              last_message: c.last_message,
+              last_message_at: c.last_message_at,
+              unread_count: c.unread_count || 0
+            })).filter((c: any) => c.username);
+
+            setContacts(prev => {
+              const map = new Map<string, Contact>();
+              prev.forEach(p => map.set(p.username, { ...p }));
+              normalized.forEach((n: any) => {
+                const exist = map.get(n.username);
+                if (exist) map.set(n.username, { ...exist, ...n });
+                else map.set(n.username, n);
+              });
+              return Array.from(map.values()).sort((a, b) => (b.last_message_at || 0) - (a.last_message_at || 0));
+            });
+
+            return;
           }
+
+          if (msg.type === 'history') {
+            const history = (msg.messages || []).map((m: any) => ({ ...m, id: m.id || uuidv4() }));
+            setMessages(history);
+            return;
+          }
+
+          if (msg.type === 'message_deleted') {
+            const idsToDelete: number[] = msg.message_ids || [];
+            setMessages(prev => prev.map(m => idsToDelete.includes(Number(m.id)) ? { ...m, type: 'deleted', content: '' } : m));
+            return;
+          }
+
+          if (msg.type === 'typing') {
+            if (msg.from && msg.from !== currentUserRef.current) {
+              setTypingUser(msg.from);
+              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+              typingTimeoutRef.current = setTimeout(() => setTypingUser(null), 3000);
+            }
+            return;
+          }
+
           if (msg.type === 'search_results') {
             const normalized: Contact[] = (msg.contacts || []).map((c: any) => ({
               username: c.username || c.Username || '',
               avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
             })).filter((c: Contact) => c.username);
             setSearchResults(normalized);
+            return;
           }
 
         } catch (err) {
           console.error('Lỗi parse JSON từ WebSocket:', err, e.data);
         }
       };
+
 
       socket.onclose = () => {
         console.warn('[WS] Disconnected');
@@ -257,8 +294,15 @@ export default function ChatBoxPage() {
   const sendMessage = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !toUser || input.trim() === '') return;
 
-    const message: Message = {
-      id: uuidv4(),
+    if (toUser === currentUser) {
+      alert("Không thể gửi tin nhắn cho chính mình");
+      return;
+    }
+
+    const tempId = uuidv4();
+
+    const messageToSend = {
+      tempId, // chỉ gửi tempId, không gửi id
       type: 'text',
       from: currentUser,
       to: toUser,
@@ -267,16 +311,31 @@ export default function ChatBoxPage() {
 
     try {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
-      } setInput('');
+        ws.send(JSON.stringify(messageToSend));
+      }
+
+      // Hiển thị ngay tin nhắn với id tạm (để render trong UI)
+      setMessages(prev => [
+        ...prev,
+        {
+          id: tempId, // id tạm chỉ dùng trong FE
+          type: 'text',
+          from: currentUser,
+          to: toUser,
+          content: input.trim(),
+        }
+      ]);
+
+      setInput('');
     } catch (err) {
-      alert('Lỗi khi gửi tin nhắn: ' + (err as any)?.message || 'Không thể gửi tin nhắn');
+      alert('Lỗi khi gửi tin nhắn: ' + ((err as any)?.message || 'Không thể gửi tin nhắn'));
     }
   };
 
 
 
-  const uploadFile = async (file: File, type: 'image' | 'video' | 'file') => {
+
+  const uploadFile = async (file: File, type: 'image' | 'video' | 'file' | 'voice') => {
     const formData = new FormData();
     formData.append(type, file);
 
@@ -288,12 +347,16 @@ export default function ChatBoxPage() {
     const data = await res.json();
     if (res.ok && data.url) {
       const message: Message = {
-        id: uuidv4(),
+        tempId: uuidv4(),
         type,
         from: currentUser,
         to: toUser,
         content: data.url,
       };
+      setMessages(prev => [
+        ...prev,
+        { ...message, id: message.tempId }
+      ]);
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(message));
@@ -309,18 +372,30 @@ export default function ChatBoxPage() {
     const file = e.target.files?.[0];
     if (!file || !ws || !toUser) return;
 
-    if (file.type.startsWith('image/')) uploadFile(file, 'image');
-    else if (file.type.startsWith('video/')) uploadFile(file, 'video');
-    else if (
+    if (file.type.startsWith('image/')) {
+      uploadFile(file, 'image');
+      return;
+    }
+    if (file.type.startsWith('video/')) {
+      uploadFile(file, 'video');
+      return;
+    }
+    if (file.type.startsWith('audio/') || file.name.endsWith('.webm')) {
+      const fixedFile = new File([file], file.name, { type: 'audio/webm' });
+      uploadFile(fixedFile, 'voice');
+      return;
+    }
+    if (
       file.type === 'application/pdf' ||
       file.type === 'application/msword' ||
       file.type.includes('officedocument')
     ) {
       uploadFile(file, 'file');
-    } else {
-      alert('Loại file không được hỗ trợ!');
+      return;
     }
+    alert('Loại file không được hỗ trợ!');
   };
+
 
   const handleAudioRecord = async () => {
     if (recording) {
@@ -352,17 +427,22 @@ export default function ChatBoxPage() {
           const data = await res.json();
           if (res.ok && data.url) {
             const message: Message = {
-              id: uuidv4(),
+              tempId: uuidv4(),
               type: 'voice',
               from: currentUser,
               to: toUser,
               content: data.url,
             };
+            setMessages(prev => [
+              ...prev,
+              { ...message, id: message.tempId }
+            ]);
             setTimeout(() => {
               if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(message));
               }
             }, 300);
+
           } else {
             alert('Tải file ghi âm thất bại!');
           }
@@ -458,6 +538,73 @@ export default function ChatBoxPage() {
     }
   };
 
+  function VoiceMessage({ src }: { src: string }) {
+    const [playing, setPlaying] = useState(false);
+    const [currentTime, setCurrentTime] = useState("0:00");
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+
+    const togglePlay = () => {
+      if (!audioRef.current) return;
+      if (playing) {
+        audioRef.current.pause();
+      } else {
+        audioRef.current.currentTime = 0;
+        setCurrentTime("0:00");
+        audioRef.current.play();
+      }
+      setPlaying(!playing);
+    };
+
+    const formatTime = (time: number) => {
+      const mins = Math.floor(time / 60);
+      const secs = Math.floor(time % 60).toString().padStart(2, "0");
+      return `${mins}:${secs}`;
+    };
+
+    return (
+      <div className="flex items-center gap-3 bg-gray-100 px-3 py-2 rounded-lg">
+        <button
+          onClick={togglePlay}
+          className="bg-blue-500 text-white p-2 rounded-full hover:bg-blue-600"
+        >
+          {playing ? <FiPause /> : <FiPlay />}
+        </button>
+
+        {/* waveform giả lập */}
+        <div className="flex items-center gap-0.5 flex-1">
+          {[...Array(10)].map((_, i) => (
+            <div
+              key={i}
+              className="w-1 bg-gray-600 rounded"
+              style={{
+                height: `${Math.random() * 14 + 6}px`,
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Chỉ hiển thị thời gian đã phát */}
+        <span className="ml-auto text-sm text-gray-600">{currentTime}</span>
+
+        <audio
+          ref={audioRef}
+          src={src}
+          preload="auto"
+          onTimeUpdate={(e) => {
+            setCurrentTime(formatTime((e.target as HTMLAudioElement).currentTime));
+          }}
+          onEnded={() => {
+            setPlaying(false);
+            setCurrentTime("0:00");
+          }}
+          onPause={() => setPlaying(false)}
+          onPlay={() => setPlaying(true)}
+        />
+      </div>
+    );
+  }
+
+
   return (
     <div className="flex h-screen">
 
@@ -465,14 +612,11 @@ export default function ChatBoxPage() {
         className="w-1/4 border-r p-4 bg-white overflow-y-auto"
         onScroll={(e) => {
           const target = e.currentTarget;
+          if (searchQuery.trim() !== '') return; // không load khi đang search
           if (target.scrollTop + target.clientHeight >= target.scrollHeight - 10) {
             contactsPageRef.current++;
             if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: 'load_contacts',
-                page: contactsPageRef.current,
-                page_size: 20
-              }));
+              ws.send(JSON.stringify({ type: 'load_contacts', page: contactsPageRef.current, page_size: 20 }));
             }
           }
         }}
@@ -489,7 +633,7 @@ export default function ChatBoxPage() {
         </div>
         {listToShow.map((contact, idx) => (
           <div
-            key={`${contact.username}-${idx}`}
+            key={contact.username}
             onClick={() => handleSelectUser(contact.username)}
             className={`flex items-center p-2 mb-2 rounded cursor-pointer ${toUser === contact.username ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
           >
@@ -509,10 +653,10 @@ export default function ChatBoxPage() {
           {messages.map((m) => {
             const isSelf = m.from === currentUser;
             const avatar = contacts.find((c) => c.username === m.from)?.avatar || DEFAULT_AVATAR;
-
             return (
+
               <div
-                key={m.id}
+                key={m.tempId ? `temp-${m.tempId}` : `id-${m.id}`}
                 className={`flex items-end mb-3 ${isSelf ? 'justify-end' : 'justify-start'}`}
               >
                 {!isSelf && (
@@ -547,10 +691,8 @@ export default function ChatBoxPage() {
                     <video controls className="max-w-xs rounded">
                       <source src={`${API_BASE}${m.content}`} type="video/mp4" />
                     </video>
-                  ) : m.type === 'voice' ? (
-                    <audio controls className="w-full max-w-xs">
-                      <source src={`${API_BASE}${m.content}`} type="audio/webm" />
-                    </audio>
+                  ) : (m.type === 'voice' || m.type === 'audio') ? (
+                    <VoiceMessage src={`${API_BASE}${m.content}`} />
                   ) : m.type === 'file' ? (
                     <div className="flex flex-col max-w-xs p-3 rounded-lg border bg-white shadow-sm">
                       {m.content.toLowerCase().endsWith('.pdf') ? (
