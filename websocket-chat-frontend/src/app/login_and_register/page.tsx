@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 
 const API_BASE = 'http://localhost:8080';
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+const AVATAR_PREFIX = 'http://localhost:8080/static/';
 
 type UserPreview = {
     username: string;
@@ -20,32 +21,37 @@ export default function LoginPage() {
     const [email, setEmail] = useState('');
     const [recentUsers, setRecentUsers] = useState<UserPreview[]>([]);
 
-    // Load danh sách người dùng từ localStorage
     useEffect(() => {
         const raw = localStorage.getItem('recent_users');
         if (raw) {
             const parsed = JSON.parse(raw) as UserPreview[];
-            const sorted = parsed.sort((a, b) => new Date(b.lastLogin).getTime() - new Date(a.lastLogin).getTime());
+            const sorted = parsed.sort(
+                (a, b) => new Date(b.lastLogin).getTime() - new Date(a.lastLogin).getTime()
+            );
             setRecentUsers(sorted);
         }
     }, []);
 
-    // Cập nhật danh sách recent users khi đăng nhập thành công
-    const saveUserToRecent = (username: string) => {
+    const saveUserToRecent = (username: string, avatarUrl?: string) => {
         const raw = localStorage.getItem('recent_users');
         let list: UserPreview[] = raw ? JSON.parse(raw) : [];
 
-        // Xóa nếu đã tồn tại (để thêm mới lên đầu)
         list = list.filter((u) => u.username !== username);
 
-        // Thêm mới lên đầu
+        const avatar =
+            avatarUrl && avatarUrl.startsWith('/static/')
+                ? `${API_BASE}${avatarUrl}`
+                : avatarUrl || DEFAULT_AVATAR;
+
         list.unshift({
             username,
-            avatar: DEFAULT_AVATAR,
+            avatar,
             lastLogin: new Date().toISOString(),
         });
 
-        localStorage.setItem('recent_users', JSON.stringify(list.slice(0, 6))); // tối đa 6 tài khoản
+        const sliced = list.slice(0, 6);
+        localStorage.setItem('recent_users', JSON.stringify(sliced));
+        setRecentUsers(sliced);
     };
 
     const removeUser = (username: string) => {
@@ -55,54 +61,74 @@ export default function LoginPage() {
     };
 
     const handleLogin = async () => {
-        const res = await fetch(`${API_BASE}/api/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ login, password }),
-        });
+        try {
+            const res = await fetch(`${API_BASE}/api/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ login, password }),
+            });
 
-        const data = await res.json();
-        if (res.ok) {
+            const data = await res.json();
+
             if (res.ok) {
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('username', login);
-                saveUserToRecent(login);
-                router.push('/');
+                localStorage.setItem(
+                    "avatar",
+                    data.avatar_url && data.avatar_url.startsWith("/static/")
+                        ? `${API_BASE}${data.avatar_url}`
+                        : data.avatar_url || DEFAULT_AVATAR
+                );
+                if (!data.avatar_url || !data.avatar_url.startsWith('/static/')) {
+                    router.push('/set_avatar');
+                    return;
+                }
+                saveUserToRecent(login, data.avatar_url);
+                setTimeout(() => {
+                    router.push("/");
+                }, 1000);
+            } else {
+                alert(data.error || 'Đăng nhập thất bại');
             }
-
-        } else {
-            alert(data.error || 'Đăng nhập thất bại');
+        } catch (err) {
+            console.error(err);
+            alert('Lỗi kết nối server');
         }
     };
 
     const handleRegister = async () => {
-        const res = await fetch(`${API_BASE}/api/register`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: login, password, email }),
-        });
+        try {
+            const res = await fetch(`${API_BASE}/api/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: login, password, email }),
+            });
 
-        const data = await res.json();
-        if (res.ok) {
-            alert('Đăng ký thành công! Hãy đăng nhập.');
-            setMode('login');
-        } else {
-            alert(data.error || 'Đăng ký thất bại');
+            const data = await res.json();
+            if (res.ok) {
+                alert('Đăng ký thành công! Hãy đăng nhập.');
+                setMode('login');
+            } else {
+                alert(data.error || 'Đăng ký thất bại');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Lỗi kết nối server');
         }
     };
 
     return (
         <div className="min-h-screen bg-gray-100 flex items-center justify-center px-4">
             <div className="flex w-full max-w-6xl gap-12">
-                {/* Cột trái: Đăng nhập gần đây */}
+                {/* Gần đây */}
                 <div className="flex-1 bg-white rounded-lg p-8 shadow-md flex flex-col justify-center min-h-[360px]">
                     <h1 className="text-2xl font-semibold mb-6">Đăng nhập gần đây</h1>
                     <p className="text-gray-600 mb-4">Nhấp vào ảnh của bạn hoặc thêm tài khoản.</p>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1 relative">
                         {recentUsers.map((user) => (
                             <div
                                 key={user.username}
-                                className="w-32 h-40 bg-white rounded-lg shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-lg transition-all duration-200"
+                                className="w-32 h-40 bg-white rounded-lg shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-lg transition-all duration-200 relative"
                                 onClick={() => {
                                     setLogin(user.username);
                                     setMode('login');
@@ -113,14 +139,19 @@ export default function LoginPage() {
                                         e.stopPropagation();
                                         removeUser(user.username);
                                     }}
-                                    className="absolute top-1 right-1 text-sm text-gray-500 hover:text-red-500 hidden group-hover:block"
+                                    className="absolute top-1 right-1 text-sm text-gray-500 hover:text-red-500"
                                 >
                                     ×
                                 </div>
-                                <img src={user.avatar} className="w-16 h-16 mx-auto rounded-full mb-2" />
+                                <img
+                                    src={user.avatar || DEFAULT_AVATAR}
+                                    className="w-16 h-16 mx-auto rounded-full mb-2"
+                                />
                                 <div>{user.username}</div>
                             </div>
                         ))}
+
+                        {/* Thêm tài khoản */}
                         <div
                             className="w-32 h-40 bg-white rounded-lg shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-lg transition-all duration-200"
                             onClick={() => setMode('register')}
@@ -131,7 +162,7 @@ export default function LoginPage() {
                     </div>
                 </div>
 
-                {/* Cột phải: Đăng nhập / Đăng ký */}
+                {/* Form */}
                 <div className="w-[400px] bg-white rounded-lg shadow-md p-6">
                     {mode === 'login' ? (
                         <>

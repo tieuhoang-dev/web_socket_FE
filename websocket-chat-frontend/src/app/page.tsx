@@ -52,6 +52,9 @@ export default function ChatBoxPage() {
   const searchDebounceRef = useRef<number | null>(null);
   const listToShow = searchResults.length > 0 ? searchResults : contacts;
   const toUserRef = useRef(toUser);
+  const currentUserAvatar =
+    (typeof window !== "undefined" && localStorage.getItem("avatar")) ||
+    DEFAULT_AVATAR;
   useEffect(() => {
     toUserRef.current = toUser;
   }, [toUser]);
@@ -352,7 +355,7 @@ export default function ChatBoxPage() {
       setMessages(prev => [
         ...prev,
         {
-          id: tempId, 
+          id: tempId,
           type: 'text',
           from: currentUser,
           to: toUser,
@@ -683,7 +686,9 @@ export default function ChatBoxPage() {
           >
             <div className="relative w-10 h-10">
               <img
-                src={contact.avatar}
+                src={contact.avatar?.startsWith("http")
+                  ? contact.avatar
+                  : `${API_BASE}${contact.avatar}`}
                 alt={contact.username}
                 className="w-10 h-10 rounded-full"
               />
@@ -691,7 +696,6 @@ export default function ChatBoxPage() {
                 className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border border-white ${contact.status === "online" ? "bg-green-500" : "bg-gray-400"
                   }`}
               />
-              {/* badge unread count overlay */}
               {(contact.unread_count ?? 0) > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full shadow">
                   {contact.unread_count}
@@ -716,7 +720,16 @@ export default function ChatBoxPage() {
         <div className="flex-1 overflow-y-auto bg-white border rounded p-4 shadow-inner mb-4">
           {messages.map((m) => {
             const isSelf = m.from === currentUser;
-            const avatar = contacts.find((c) => c.username === m.from)?.avatar || DEFAULT_AVATAR;
+            const contact = contacts.find((c) => c.username === m.from);
+            const avatar =
+              m.from === currentUser
+                ? (localStorage.getItem("avatar") || DEFAULT_AVATAR)
+                : (
+                  contacts.find((c) => c.username === m.from)?.avatar?.startsWith("http")
+                    ? contacts.find((c) => c.username === m.from)!.avatar
+                    : `${API_BASE}${contacts.find((c) => c.username === m.from)?.avatar}`
+                ) || DEFAULT_AVATAR;
+
             return (
 
               <div
@@ -748,7 +761,6 @@ export default function ChatBoxPage() {
                   </Menu>
                 )}
                 <div className="relative flex items-center">
-                  {/* Nội dung tin nhắn */}
                   {m.type === 'image' ? (
                     <img src={`${API_BASE}${m.content}`} className="max-w-xs rounded" />
                   ) : m.type === 'video' ? (
@@ -807,7 +819,7 @@ export default function ChatBoxPage() {
 
 
                 {isSelf && (
-                  <img src={avatar} className="w-8 h-8 rounded-full ml-2" />
+                  <img src={currentUserAvatar} className="w-8 h-8 rounded-full ml-2" />
                 )}
               </div>
             );
@@ -816,7 +828,7 @@ export default function ChatBoxPage() {
           {typingUser === toUser && (
             <TypingIndicator
               avatar={
-                contacts.find((c) => c.username === typingUser)?.avatar ||
+                `${API_BASE}${contacts.find((c) => c.username === typingUser)?.avatar}` ||
                 DEFAULT_AVATAR
               }
               isSelf={false}
