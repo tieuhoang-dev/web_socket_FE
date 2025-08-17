@@ -14,7 +14,8 @@ type Message = {
   to: string;
   content: string;
   type: string;
-  tempId?: string; // Chỉ dùng trong FE, không gửi đi
+  tempId?: string;
+  status?: 'sent' | 'seen';
 };
 
 type Contact = {
@@ -23,6 +24,7 @@ type Contact = {
   last_message?: string;
   last_message_at?: number;
   unread_count?: number;
+  status?: string;
 };
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
 const API_BASE = 'http://localhost:8080';
@@ -79,6 +81,7 @@ export default function ChatBoxPage() {
         reconnectAttempts = 0;
         console.log('[WS] Connected');
         contactsPageRef.current = 0;
+        socket?.send(JSON.stringify({ type: 'set_online' }));
         socket?.send(JSON.stringify({
           type: 'load_contacts',
           page: contactsPageRef.current,
@@ -104,7 +107,6 @@ export default function ChatBoxPage() {
             const now = Date.now();
 
             if (msg.from === cu && msg.tempId) {
-              // Replace tempId
               setMessages(prev => {
                 const withoutDup = prev.filter(m => m.id !== msg.id);
                 return withoutDup.map(m =>
@@ -112,7 +114,6 @@ export default function ChatBoxPage() {
                 );
               });
 
-              // Update contact nếu không phải gửi cho chính mình
               if (msg.to !== cu) {
                 setContacts(prev => {
                   const idx = prev.findIndex(c => c.username === msg.to);
@@ -138,9 +139,9 @@ export default function ChatBoxPage() {
                 });
               }
 
-              return; // Quan trọng: không cho chạy tiếp
+
+              return;
             } else {
-              // 💡 Xử lý tin từ người khác
               const belongsToCurrentConversation =
                 (msg.from === tu && msg.to === cu) || (msg.from === cu && msg.to === tu);
 
@@ -148,7 +149,6 @@ export default function ChatBoxPage() {
                 setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
               }
 
-              // Update contact cho người gửi tin
               setContacts(prev => {
                 const idx = prev.findIndex(c => c.username === msg.from);
                 let updated = [...prev];
@@ -177,13 +177,23 @@ export default function ChatBoxPage() {
               });
             }
           }
+          if (msg.type === "seen") {
+            setMessages(prev =>
+              prev.map(m =>
+                m.from === currentUser && m.to === msg.with
+                  ? { ...m, status: "seen" }
+                  : m
+              )
+            );
+          }
           if (msg.type === 'contacts') {
             const normalized = (msg.contacts || []).map((c: any) => ({
               username: c.username || c.Username || '',
               avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
               last_message: c.last_message,
               last_message_at: c.last_message_at,
-              unread_count: c.unread_count || 0
+              unread_count: c.unread_count || c.UnreadCount || 0,
+              status: c.status,
             })).filter((c: any) => c.username);
 
             setContacts(prev => {
@@ -201,7 +211,15 @@ export default function ChatBoxPage() {
           }
 
           if (msg.type === 'history') {
-            const history = (msg.messages || []).map((m: any) => ({ ...m, id: m.id || uuidv4() }));
+            const history: Message[] = (msg.messages || []).map((m: any) => ({
+              id: m.id || uuidv4(),
+              from: m.from,
+              to: m.to,
+              content: m.content,
+              type: m.type,
+              status: m.status || 'sent',
+              created_at: m.created_at,
+            }));
             setMessages(history);
             return;
           }
@@ -211,7 +229,23 @@ export default function ChatBoxPage() {
             setMessages(prev => prev.map(m => idsToDelete.includes(Number(m.id)) ? { ...m, type: 'deleted', content: '' } : m));
             return;
           }
+          if (msg.type === 'set_online') {
+            setContacts(prev =>
+              prev.map(c =>
+                c.username === msg.from ? { ...c, status: 'online' } : c
+              )
+            );
+            return;
+          }
 
+          if (msg.type === 'set_offline') {
+            setContacts(prev =>
+              prev.map(c =>
+                c.username === msg.from ? { ...c, status: 'offline' } : c
+              )
+            );
+            return;
+          }
           if (msg.type === 'typing') {
             if (msg.from && msg.from !== currentUserRef.current) {
               setTypingUser(msg.from);
@@ -225,6 +259,7 @@ export default function ChatBoxPage() {
             const normalized: Contact[] = (msg.contacts || []).map((c: any) => ({
               username: c.username || c.Username || '',
               avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
+              status: c.status || c.Status || 'offline',
             })).filter((c: Contact) => c.username);
             setSearchResults(normalized);
             return;
@@ -302,7 +337,7 @@ export default function ChatBoxPage() {
     const tempId = uuidv4();
 
     const messageToSend = {
-      tempId, // chỉ gửi tempId, không gửi id
+      tempId,
       type: 'text',
       from: currentUser,
       to: toUser,
@@ -314,11 +349,10 @@ export default function ChatBoxPage() {
         ws.send(JSON.stringify(messageToSend));
       }
 
-      // Hiển thị ngay tin nhắn với id tạm (để render trong UI)
       setMessages(prev => [
         ...prev,
         {
-          id: tempId, // id tạm chỉ dùng trong FE
+          id: tempId, 
           type: 'text',
           from: currentUser,
           to: toUser,
@@ -352,6 +386,7 @@ export default function ChatBoxPage() {
         from: currentUser,
         to: toUser,
         content: data.url,
+        status: 'sent',
       };
       setMessages(prev => [
         ...prev,
@@ -531,12 +566,22 @@ export default function ChatBoxPage() {
   const handleSelectUser = (username: string) => {
     setToUser(username);
     setMessages([]);
-    setSearchQuery('');
+    setSearchQuery("");
     setSearchResults([]);
+
+    setContacts(prev =>
+      prev.map(c =>
+        c.username === username ? { ...c, unread_count: 0 } : c
+      )
+    );
+
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'load_history', with: username }));
+      ws.send(JSON.stringify({ type: "load_history", with: username }));
+
+      ws.send(JSON.stringify({ type: "seen", with: username }));
     }
   };
+
 
   function VoiceMessage({ src }: { src: string }) {
     const [playing, setPlaying] = useState(false);
@@ -583,7 +628,6 @@ export default function ChatBoxPage() {
           ))}
         </div>
 
-        {/* Chỉ hiển thị thời gian đã phát */}
         <span className="ml-auto text-sm text-gray-600">{currentTime}</span>
 
         <audio
@@ -612,7 +656,7 @@ export default function ChatBoxPage() {
         className="w-1/4 border-r p-4 bg-white overflow-y-auto"
         onScroll={(e) => {
           const target = e.currentTarget;
-          if (searchQuery.trim() !== '') return; // không load khi đang search
+          if (searchQuery.trim() !== '') return;
           if (target.scrollTop + target.clientHeight >= target.scrollHeight - 10) {
             contactsPageRef.current++;
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -635,12 +679,32 @@ export default function ChatBoxPage() {
           <div
             key={contact.username}
             onClick={() => handleSelectUser(contact.username)}
-            className={`flex items-center p-2 mb-2 rounded cursor-pointer ${toUser === contact.username ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
+            className="flex items-center gap-2 p-2 hover:bg-gray-100 cursor-pointer"
           >
-            <img src={contact.avatar || DEFAULT_AVATAR} className="w-10 h-10 rounded-full mr-3" />
-            <span>{contact.username}</span>
+            <div className="relative w-10 h-10">
+              <img
+                src={contact.avatar}
+                alt={contact.username}
+                className="w-10 h-10 rounded-full"
+              />
+              <span
+                className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border border-white ${contact.status === "online" ? "bg-green-500" : "bg-gray-400"
+                  }`}
+              />
+              {/* badge unread count overlay */}
+              {(contact.unread_count ?? 0) > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full shadow">
+                  {contact.unread_count}
+                </span>
+              )}
+            </div>
+            <div className="flex-1">
+              <div className="font-semibold">{contact.username}</div>
+              <div className="text-sm text-gray-500">{contact.last_message || ""}</div>
+            </div>
           </div>
         ))}
+
       </div>
 
 
@@ -771,7 +835,6 @@ export default function ChatBoxPage() {
             onChange={(e) => {
               setInput(e.target.value);
 
-              // Gửi typing nếu đủ điều kiện
               const now = Date.now();
               if (
                 ws &&
