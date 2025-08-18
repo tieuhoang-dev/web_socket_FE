@@ -6,6 +6,8 @@ import { FiImage, FiSend, FiDownload } from 'react-icons/fi';
 import { Menu } from '@headlessui/react';
 import { FiMoreVertical } from 'react-icons/fi';
 import { FiPlay, FiPause } from "react-icons/fi";
+import { FiSettings } from "react-icons/fi";
+import { useRouter } from "next/navigation";
 
 
 type Message = {
@@ -42,7 +44,7 @@ export default function ChatBoxPage() {
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastTypingSentRef = useRef<number>(0);
-
+  const wsRef = useRef<WebSocket | null>(null);
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const currentUser = typeof window !== 'undefined' ? localStorage.getItem('username') || '' : '';
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -52,6 +54,7 @@ export default function ChatBoxPage() {
   const searchDebounceRef = useRef<number | null>(null);
   const listToShow = searchResults.length > 0 ? searchResults : contacts;
   const toUserRef = useRef(toUser);
+  const router = useRouter();
   const currentUserAvatar =
     (typeof window !== "undefined" && localStorage.getItem("avatar")) ||
     DEFAULT_AVATAR;
@@ -63,7 +66,15 @@ export default function ChatBoxPage() {
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+  const [username, setUsername] = useState("");
+  const [userAvatar, setUserAvatar] = useState(DEFAULT_AVATAR);
 
+  useEffect(() => {
+    const u = localStorage.getItem("username") || "";
+    const a = localStorage.getItem("avatar") || DEFAULT_AVATAR;
+    setUsername(u);
+    setUserAvatar(a.startsWith("http") ? a : `${API_BASE}${a}`);
+  }, []);
   useEffect(() => {
     if (!token) {
       window.location.href = '/';
@@ -150,6 +161,9 @@ export default function ChatBoxPage() {
 
               if (belongsToCurrentConversation) {
                 setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
+                if (msg.from !== cu && ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "seen", with: msg.from }));
+                }
               }
 
               setContacts(prev => {
@@ -189,6 +203,20 @@ export default function ChatBoxPage() {
               )
             );
           }
+          if (msg.type === "avatar_changed") {
+            if (msg.from === currentUserRef.current) {
+              localStorage.setItem("avatar", msg.avatar);
+              setUserAvatar(msg.avatar.startsWith("http") ? msg.avatar : `${API_BASE}${msg.avatar}`);
+            }
+
+            setContacts(prev =>
+              prev.map(c =>
+                c.username === msg.from ? { ...c, avatar: msg.avatar } : c
+              )
+            );
+            return;
+          }
+
           if (msg.type === 'contacts') {
             const normalized = (msg.contacts || []).map((c: any) => ({
               username: c.username || c.Username || '',
@@ -399,7 +427,7 @@ export default function ChatBoxPage() {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(message));
         }
-      }, 300);
+      }, 3000);
     }
     else {
       alert(`Tải ${type} thất bại!`);
@@ -479,7 +507,7 @@ export default function ChatBoxPage() {
               if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(message));
               }
-            }, 300);
+            }, 3000);
 
           } else {
             alert('Tải file ghi âm thất bại!');
@@ -656,7 +684,7 @@ export default function ChatBoxPage() {
     <div className="flex h-screen">
 
       <div
-        className="w-1/4 border-r p-4 bg-white overflow-y-auto"
+        className="w-1/4 border-r bg-white flex flex-col"
         onScroll={(e) => {
           const target = e.currentTarget;
           if (searchQuery.trim() !== '') return;
@@ -668,7 +696,7 @@ export default function ChatBoxPage() {
           }
         }}
       >
-        <div className="mb-3">
+        <div className="p-4 border-b">
           <input
             type="text"
             value={searchQuery}
@@ -678,37 +706,72 @@ export default function ChatBoxPage() {
             className="w-full p-2 border rounded"
           />
         </div>
-        {listToShow.map((contact, idx) => (
-          <div
-            key={contact.username}
-            onClick={() => handleSelectUser(contact.username)}
-            className="flex items-center gap-2 p-2 hover:bg-gray-100 cursor-pointer"
-          >
-            <div className="relative w-10 h-10">
-              <img
-                src={contact.avatar?.startsWith("http")
-                  ? contact.avatar
-                  : `${API_BASE}${contact.avatar}`}
-                alt={contact.username}
-                className="w-10 h-10 rounded-full"
-              />
-              <span
-                className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border border-white ${contact.status === "online" ? "bg-green-500" : "bg-gray-400"
-                  }`}
-              />
-              {(contact.unread_count ?? 0) > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full shadow">
-                  {contact.unread_count}
-                </span>
-              )}
+        <div className="flex-1 overflow-y-auto p-2">
+          {listToShow.map((contact, idx) => (
+            <div
+              key={contact.username}
+              onClick={() => handleSelectUser(contact.username)}
+              className="flex items-center gap-2 p-2 hover:bg-gray-100 cursor-pointer"
+            >
+              <div className="relative w-10 h-10">
+                <img
+                  src={contact.avatar?.startsWith("http")
+                    ? contact.avatar
+                    : `${API_BASE}${contact.avatar}`}
+                  alt={contact.username}
+                  className="w-10 h-10 rounded-full"
+                />
+                <span
+                  className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border border-white ${contact.status === "online" ? "bg-green-500" : "bg-gray-400"
+                    }`}
+                />
+                {(contact.unread_count ?? 0) > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full shadow">
+                    {contact.unread_count}
+                  </span>
+                )}
+              </div>
+              <div className="flex-1">
+                <div className="font-semibold">{contact.username}</div>
+                <div className="text-sm text-gray-500">{contact.last_message || ""}</div>
+              </div>
             </div>
-            <div className="flex-1">
-              <div className="font-semibold">{contact.username}</div>
-              <div className="text-sm text-gray-500">{contact.last_message || ""}</div>
-            </div>
+          ))}
+        </div>
+        {/* Block 3: avatar + settings */}
+        <div className="p-3 border-t flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <img
+              src={userAvatar}
+              alt={username}
+              className="w-10 h-10 rounded-full"
+            />
+            <span className="font-medium">{username}</span>
           </div>
-        ))}
 
+          <Menu as="div" className="relative inline-block text-left">
+            <Menu.Button className="p-2 rounded-full hover:bg-gray-100">
+              <FiSettings className="w-5 h-5" />
+            </Menu.Button>
+            <Menu.Items className="absolute bottom-12 right-0 w-40 origin-bottom-right bg-white border border-gray-200 rounded-md shadow-lg z-50">              <div className="py-1">
+              <Menu.Item>
+                {({ active }) => (
+                  <button
+                    onClick={() => {
+                      wsRef.current?.close(1000, "change-avatar");
+                      router.push("/set_avatar");
+                    }}
+                    className={`${active ? "bg-blue-600 text-white" : "text-gray-700"
+                      } group flex w-full items-center px-4 py-2 text-sm`}
+                  >
+                    Đổi Avatar
+                  </button>
+                )}
+              </Menu.Item>
+            </div>
+            </Menu.Items>
+          </Menu>
+        </div>
       </div>
 
 
