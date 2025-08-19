@@ -8,8 +8,7 @@ import { FiMoreVertical } from 'react-icons/fi';
 import { FiPlay, FiPause } from "react-icons/fi";
 import { FiSettings } from "react-icons/fi";
 import { useRouter } from "next/navigation";
-
-
+import { jwtDecode } from "jwt-decode";
 type Message = {
   id?: string | number;
   from: string;
@@ -21,6 +20,7 @@ type Message = {
 };
 
 type Contact = {
+  userID: string;
   username: string;
   avatar?: string;
   last_message?: string;
@@ -37,7 +37,8 @@ export default function ChatBoxPage() {
   const [toUser, setToUser] = useState('');
   const [input, setInput] = useState('');
   const [recording, setRecording] = useState(false);
-
+  const historyPageRef = useRef(0);
+  const historyScrollRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -46,7 +47,26 @@ export default function ChatBoxPage() {
   const lastTypingSentRef = useRef<number>(0);
   const wsRef = useRef<WebSocket | null>(null);
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  const currentUser = typeof window !== 'undefined' ? localStorage.getItem('username') || '' : '';
+  const [currentUserID, setCurrentUserID] = useState('');
+  useEffect(() => {
+    let uid = '';
+
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const decoded: any = jwtDecode(token);
+        uid = decoded.user_id;
+      } catch (e) {
+        console.error("Decode fail", e);
+      }
+    }
+    if (!uid) {
+      uid = localStorage.getItem('userID') || '';
+    }
+    setCurrentUserID(uid);
+  }, []);
+  const currentUsername = typeof window !== 'undefined' ? localStorage.getItem('username') || '' : '';
+  const [username, setUsername] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const contactsPageRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,6 +75,7 @@ export default function ChatBoxPage() {
   const listToShow = searchResults.length > 0 ? searchResults : contacts;
   const toUserRef = useRef(toUser);
   const router = useRouter();
+  const toUserContact = contacts.find(c => c.userID === toUser);
   const currentUserAvatar =
     (typeof window !== "undefined" && localStorage.getItem("avatar")) ||
     DEFAULT_AVATAR;
@@ -62,11 +83,11 @@ export default function ChatBoxPage() {
     toUserRef.current = toUser;
   }, [toUser]);
 
-  const currentUserRef = useRef(currentUser);
+  const currentUserRef = useRef(currentUserID);
   useEffect(() => {
-    currentUserRef.current = currentUser;
-  }, [currentUser]);
-  const [username, setUsername] = useState("");
+    currentUserRef.current = currentUserID;
+  }, [currentUserID]);
+
   const [userAvatar, setUserAvatar] = useState(DEFAULT_AVATAR);
 
   useEffect(() => {
@@ -80,7 +101,7 @@ export default function ChatBoxPage() {
       window.location.href = '/';
       return;
     }
-
+    console.log("User ID:", currentUserID);
     let socket: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -88,6 +109,7 @@ export default function ChatBoxPage() {
     const maxReconnectAttempts = 10;
 
     const connect = () => {
+      if (!token || !currentUserID) return;
       socket = new WebSocket(`${API_BASE.replace(/^http/, 'ws')}/ws?token=${token}`);
       setWs(socket);
 
@@ -95,14 +117,14 @@ export default function ChatBoxPage() {
         reconnectAttempts = 0;
         console.log('[WS] Connected');
         contactsPageRef.current = 0;
-        socket?.send(JSON.stringify({ type: 'set_online' }));
-        socket?.send(JSON.stringify({
+        socket?.send(JSON.stringify({ type: 'set_online', from: currentUserID })); socket?.send(JSON.stringify({
           type: 'load_contacts',
+          from: currentUserID,
           page: contactsPageRef.current,
-          page_size: 20
+          page_size: 20,
         }));
         socket?.send(JSON.stringify({ type: 'ping' }));
-
+        console.log("currentUserID =>", currentUserID);
         pingInterval = setInterval(() => {
           if (socket?.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: 'ping' }));
@@ -130,8 +152,9 @@ export default function ChatBoxPage() {
 
               if (msg.to !== cu) {
                 setContacts(prev => {
-                  const idx = prev.findIndex(c => c.username === msg.to);
+                  const idx = prev.findIndex(c => c.userID === msg.to);
                   let updated = [...prev];
+
                   if (idx >= 0) {
                     const updatedContact = {
                       ...updated[idx],
@@ -142,6 +165,7 @@ export default function ChatBoxPage() {
                     updated.unshift(updatedContact);
                   } else {
                     updated.unshift({
+                      userID: msg.to,
                       username: msg.to,
                       avatar: DEFAULT_AVATAR,
                       last_message: preview,
@@ -149,10 +173,10 @@ export default function ChatBoxPage() {
                       unread_count: 0
                     });
                   }
+
                   return updated;
                 });
               }
-
 
               return;
             } else {
@@ -161,14 +185,17 @@ export default function ChatBoxPage() {
 
               if (belongsToCurrentConversation) {
                 setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
+
                 if (msg.from !== cu && ws && ws.readyState === WebSocket.OPEN) {
                   ws.send(JSON.stringify({ type: "seen", with: msg.from }));
                 }
               }
 
+              // ✏️ Cập nhật contact người gửi (msg.from)
               setContacts(prev => {
-                const idx = prev.findIndex(c => c.username === msg.from);
+                const idx = prev.findIndex(c => c.userID === msg.from);
                 let updated = [...prev];
+
                 if (idx >= 0) {
                   const updatedContact = {
                     ...updated[idx],
@@ -183,6 +210,7 @@ export default function ChatBoxPage() {
                   updated.unshift(updatedContact);
                 } else {
                   updated.unshift({
+                    userID: msg.from,
                     username: msg.from,
                     avatar: msg.avatar || DEFAULT_AVATAR,
                     last_message: preview,
@@ -190,14 +218,16 @@ export default function ChatBoxPage() {
                     unread_count: (tu !== msg.from) ? 1 : 0
                   });
                 }
+
                 return updated;
               });
             }
           }
+
           if (msg.type === "seen") {
             setMessages(prev =>
               prev.map(m =>
-                m.from === currentUser && m.to === msg.with
+                m.from === currentUserID && m.to === msg.with
                   ? { ...m, status: "seen" }
                   : m
               )
@@ -219,6 +249,7 @@ export default function ChatBoxPage() {
 
           if (msg.type === 'contacts') {
             const normalized = (msg.contacts || []).map((c: any) => ({
+              userID: c.id || c.ID,
               username: c.username || c.Username || '',
               avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
               last_message: c.last_message,
@@ -251,7 +282,20 @@ export default function ChatBoxPage() {
               status: m.status || 'sent',
               created_at: m.created_at,
             }));
-            setMessages(history);
+            if (historyPageRef.current === 0) {
+              setMessages(history);
+              requestAnimationFrame(() => {
+                historyScrollRef.current!.scrollTop = historyScrollRef.current!.scrollHeight;
+              });
+            } else {
+              const prevHeight = historyScrollRef.current!.scrollHeight;
+              setMessages(prev => [...history, ...prev]);
+              requestAnimationFrame(() => {
+                const newHeight = historyScrollRef.current!.scrollHeight;
+                historyScrollRef.current!.scrollTop = newHeight - prevHeight;
+              });
+            }
+
             return;
           }
 
@@ -263,7 +307,7 @@ export default function ChatBoxPage() {
           if (msg.type === 'set_online') {
             setContacts(prev =>
               prev.map(c =>
-                c.username === msg.from ? { ...c, status: 'online' } : c
+                c.userID === msg.from ? { ...c, status: 'online' } : c
               )
             );
             return;
@@ -272,7 +316,7 @@ export default function ChatBoxPage() {
           if (msg.type === 'set_offline') {
             setContacts(prev =>
               prev.map(c =>
-                c.username === msg.from ? { ...c, status: 'offline' } : c
+                c.userID === msg.from ? { ...c, status: 'offline' } : c
               )
             );
             return;
@@ -288,6 +332,7 @@ export default function ChatBoxPage() {
 
           if (msg.type === 'search_results') {
             const normalized: Contact[] = (msg.contacts || []).map((c: any) => ({
+              userID: c.id || c.ID,
               username: c.username || c.Username || '',
               avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
               status: c.status || c.Status || 'offline',
@@ -344,7 +389,7 @@ export default function ChatBoxPage() {
       cleanup();
       socket?.close();
     };
-  }, [token]);
+  }, [token, currentUserID]);
 
 
   useEffect(() => {
@@ -360,7 +405,7 @@ export default function ChatBoxPage() {
   const sendMessage = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !toUser || input.trim() === '') return;
 
-    if (toUser === currentUser) {
+    if (toUser === currentUserID) {
       alert("Không thể gửi tin nhắn cho chính mình");
       return;
     }
@@ -370,7 +415,7 @@ export default function ChatBoxPage() {
     const messageToSend = {
       tempId,
       type: 'text',
-      from: currentUser,
+      from: currentUserID,
       to: toUser,
       content: input.trim(),
     };
@@ -385,7 +430,7 @@ export default function ChatBoxPage() {
         {
           id: tempId,
           type: 'text',
-          from: currentUser,
+          from: currentUserID,
           to: toUser,
           content: input.trim(),
         }
@@ -414,7 +459,7 @@ export default function ChatBoxPage() {
       const message: Message = {
         tempId: uuidv4(),
         type,
-        from: currentUser,
+        from: currentUserID,
         to: toUser,
         content: data.url,
         status: 'sent',
@@ -495,7 +540,7 @@ export default function ChatBoxPage() {
             const message: Message = {
               tempId: uuidv4(),
               type: 'voice',
-              from: currentUser,
+              from: currentUserID,
               to: toUser,
               content: data.url,
             };
@@ -594,24 +639,25 @@ export default function ChatBoxPage() {
     }, 300);
     if (v.trim() === '') setSearchResults([]);
   };
-  const handleSelectUser = (username: string) => {
-    setToUser(username);
+  const handleSelectUser = (uid: string) => {
+    setToUser(uid);
     setMessages([]);
     setSearchQuery("");
     setSearchResults([]);
+    historyPageRef.current = 0;
 
     setContacts(prev =>
       prev.map(c =>
-        c.username === username ? { ...c, unread_count: 0 } : c
+        c.userID === uid ? { ...c, unread_count: 0 } : c
       )
     );
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "load_history", with: username }));
-
-      ws.send(JSON.stringify({ type: "seen", with: username }));
+      ws.send(JSON.stringify({ type: 'load_history', with: uid, page: historyPageRef.current }));
+      ws.send(JSON.stringify({ type: "seen", with: uid }));
     }
   };
+
 
 
   function VoiceMessage({ src }: { src: string }) {
@@ -646,7 +692,6 @@ export default function ChatBoxPage() {
           {playing ? <FiPause /> : <FiPlay />}
         </button>
 
-        {/* waveform giả lập */}
         <div className="flex items-center gap-0.5 flex-1">
           {[...Array(10)].map((_, i) => (
             <div
@@ -691,7 +736,7 @@ export default function ChatBoxPage() {
           if (target.scrollTop + target.clientHeight >= target.scrollHeight - 10) {
             contactsPageRef.current++;
             if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'load_contacts', page: contactsPageRef.current, page_size: 20 }));
+              ws.send(JSON.stringify({ type: 'load_contacts', page: contactsPageRef.current, pagesize: 20, from: currentUserID }));
             }
           }
         }}
@@ -709,8 +754,8 @@ export default function ChatBoxPage() {
         <div className="flex-1 overflow-y-auto p-2">
           {listToShow.map((contact, idx) => (
             <div
-              key={contact.username}
-              onClick={() => handleSelectUser(contact.username)}
+              key={contact.userID}
+              onClick={() => handleSelectUser(contact.userID)}
               className="flex items-center gap-2 p-2 hover:bg-gray-100 cursor-pointer"
             >
               <div className="relative w-10 h-10">
@@ -738,7 +783,6 @@ export default function ChatBoxPage() {
             </div>
           ))}
         </div>
-        {/* Block 3: avatar + settings */}
         <div className="p-3 border-t flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img
@@ -780,19 +824,31 @@ export default function ChatBoxPage() {
 
 
 
-        <div className="flex-1 overflow-y-auto bg-white border rounded p-4 shadow-inner mb-4">
+        <div
+          ref={historyScrollRef}
+          onScroll={(e) => {
+            if (e.currentTarget.scrollTop === 0 && ws?.readyState === WebSocket.OPEN) {
+              const prevHeight = e.currentTarget.scrollHeight;
+              historyPageRef.current += 1;
+              ws.send(JSON.stringify({
+                type: 'load_history',
+                with: toUser,
+                page: historyPageRef.current,
+                page_size: 20,
+                prevHeight
+              }));
+            }
+          }}
+          className="flex-1 overflow-y-auto bg-white border rounded p-4 shadow-inner mb-4">
           {messages.map((m) => {
-            const isSelf = m.from === currentUser;
-            const contact = contacts.find((c) => c.username === m.from);
-            const avatar =
-              m.from === currentUser
-                ? (localStorage.getItem("avatar") || DEFAULT_AVATAR)
-                : (
-                  contacts.find((c) => c.username === m.from)?.avatar?.startsWith("http")
-                    ? contacts.find((c) => c.username === m.from)!.avatar
-                    : `${API_BASE}${contacts.find((c) => c.username === m.from)?.avatar}`
-                ) || DEFAULT_AVATAR;
+            const isSelf = String(m.from) === String(currentUserID);
 
+            const avatar =
+              m.from === currentUserID
+                ? currentUserAvatar
+                : toUserContact?.avatar?.startsWith("http")
+                  ? toUserContact.avatar
+                  : `${API_BASE}${toUserContact?.avatar}` || DEFAULT_AVATAR;
             return (
 
               <div
