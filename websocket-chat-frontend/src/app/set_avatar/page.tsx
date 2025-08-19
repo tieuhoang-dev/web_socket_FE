@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 type UserPreview = {
@@ -13,7 +13,28 @@ const API_BASE = 'http://localhost:8080';
 
 export default function SetAvatarPage() {
     const router = useRouter();
-    const username = localStorage.getItem('username') || 'User';
+    const [username, setUsername] = useState('User');
+    const [uid, setUid] = useState<string>('');
+    const wsRef = useRef<WebSocket | null>(null);
+
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            setUsername(localStorage.getItem('username') || 'User');
+            setUid(localStorage.getItem('userID') || '');
+
+            const token = localStorage.getItem('token')!;
+            // tạo kết nối websocket
+            const ws = new WebSocket(`ws://localhost:8080/ws?token=${token}`);
+            wsRef.current = ws;
+
+            ws.onopen = () => console.log('WS connected from setAvatar page');
+            ws.onclose = () => console.log('WS closed (setAvatar page)');
+
+            return () => {
+                ws.close();
+            };
+        }
+    }, []);
 
     const [avatar, setAvatar] = useState<File | null>(null);
     const [preview, setPreview] = useState<string | null>(null);
@@ -46,6 +67,20 @@ export default function SetAvatarPage() {
 
             const data = await res.json();
             if (res.ok) {
+                // thông báo cho những người đã từng chat
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(
+                        JSON.stringify({
+                            type: 'change_avatar',
+                            content: data.avatar_url,
+                        })
+                    );
+                }
+
+                // ⬇️ lưu avatar vào localStorage đúng key mà ChatBoxPage đang dùng
+                localStorage.setItem("avatar", data.avatar_url);
+                localStorage.setItem(`avatar_${uid}`, data.avatar_url);
+
                 updateRecentUser(data.avatar_url);
                 router.push('/');
             } else {
@@ -72,11 +107,16 @@ export default function SetAvatarPage() {
         ctx.fillText(initial, canvas.width / 2, canvas.height / 2);
         const dataUrl = canvas.toDataURL();
 
+        // ⬇️ lưu vào đúng key 'avatar'
+        localStorage.setItem("avatar", dataUrl);
+        localStorage.setItem(`avatar_${uid}`, dataUrl);
         updateRecentUser(dataUrl);
+
         setTimeout(() => {
-            router.push("/");
-        }, 1000);
+            router.push('/');
+        }, 500);
     };
+
 
     const updateRecentUser = (avatarUrl: string) => {
         const raw = localStorage.getItem('recent_users');

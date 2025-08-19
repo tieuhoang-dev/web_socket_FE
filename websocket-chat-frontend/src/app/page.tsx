@@ -17,10 +17,11 @@ type Message = {
   type: string;
   tempId?: string;
   status?: 'sent' | 'seen';
+  created_at?: number;
 };
 
 type Contact = {
-  userID: string;
+  id: string;
   username: string;
   avatar?: string;
   last_message?: string;
@@ -54,7 +55,8 @@ export default function ChatBoxPage() {
     const token = localStorage.getItem('token');
     if (token) {
       try {
-        const decoded: any = jwtDecode(token);
+        interface JwtPayload { user_id: string }
+        const decoded = jwtDecode<JwtPayload>(token);
         uid = decoded.user_id;
       } catch (e) {
         console.error("Decode fail", e);
@@ -65,7 +67,6 @@ export default function ChatBoxPage() {
     }
     setCurrentUserID(uid);
   }, []);
-  const currentUsername = typeof window !== 'undefined' ? localStorage.getItem('username') || '' : '';
   const [username, setUsername] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const contactsPageRef = useRef(0);
@@ -75,10 +76,13 @@ export default function ChatBoxPage() {
   const listToShow = searchResults.length > 0 ? searchResults : contacts;
   const toUserRef = useRef(toUser);
   const router = useRouter();
-  const toUserContact = contacts.find(c => c.userID === toUser);
-  const currentUserAvatar =
-    (typeof window !== "undefined" && localStorage.getItem("avatar")) ||
-    DEFAULT_AVATAR;
+  const toUserContact = contacts.find(c => c.id === toUser);
+  const [currentUserAvatar, setCurrentUserAvatar] = useState(DEFAULT_AVATAR);
+
+  useEffect(() => {
+    const a = localStorage.getItem("avatar") || DEFAULT_AVATAR;
+    setCurrentUserAvatar(a.startsWith("http") ? a : `${API_BASE}${a}`);
+  }, []);
   useEffect(() => {
     toUserRef.current = toUser;
   }, [toUser]);
@@ -97,39 +101,64 @@ export default function ChatBoxPage() {
     setUserAvatar(a.startsWith("http") ? a : `${API_BASE}${a}`);
   }, []);
   useEffect(() => {
-    if (!token) {
-      window.location.href = '/';
-      return;
-    }
-    console.log("User ID:", currentUserID);
+    if (!token || !currentUserID) return;
+
     let socket: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let pingInterval: ReturnType<typeof setInterval> | null = null;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 10;
 
+    const cleanup = () => {
+      if (pingInterval) clearInterval(pingInterval);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      pingInterval = null;
+      reconnectTimeout = null;
+      socket?.close();
+      socket = null;
+      wsRef.current = null;
+      setWs(null);
+    }
+
     const connect = () => {
       if (!token || !currentUserID) return;
-      socket = new WebSocket(`${API_BASE.replace(/^http/, 'ws')}/ws?token=${token}`);
+      socket = new WebSocket(`${API_BASE.replace(/^http/, "ws")}/ws?token=${token}`);
+      wsRef.current = socket;
       setWs(socket);
 
       socket.onopen = () => {
         reconnectAttempts = 0;
-        console.log('[WS] Connected');
+        console.log("[WS] Connected");
         contactsPageRef.current = 0;
-        socket?.send(JSON.stringify({ type: 'set_online', from: currentUserID })); socket?.send(JSON.stringify({
-          type: 'load_contacts',
-          from: currentUserID,
-          page: contactsPageRef.current,
-          page_size: 20,
-        }));
-        socket?.send(JSON.stringify({ type: 'ping' }));
-        console.log("currentUserID =>", currentUserID);
+        socket?.send(
+          JSON.stringify({ type: "set_online", from: currentUserID })
+        );
+        socket?.send(
+          JSON.stringify({
+            type: "load_contacts",
+            from: currentUserID,
+            page: contactsPageRef.current,
+            page_size: 20,
+          })
+        );
+
+        socket?.send(JSON.stringify({ type: "ping" }));
         pingInterval = setInterval(() => {
           if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'ping' }));
+            socket.send(JSON.stringify({ type: "ping" }));
           }
         }, 30000);
+      };
+
+      socket.onclose = () => {
+        console.warn("[WS] Disconnected");
+        cleanup();
+        tryReconnect();
+      };
+
+      socket.onerror = (err) => {
+        console.error("[WS] Error:", err);
+        socket?.close();
       };
 
       socket.onmessage = (e) => {
@@ -143,18 +172,18 @@ export default function ChatBoxPage() {
             const now = Date.now();
 
             if (msg.from === cu && msg.tempId) {
-              setMessages(prev => {
-                const withoutDup = prev.filter(m => m.id !== msg.id);
-                return withoutDup.map(m =>
-                  m.id === msg.tempId ? { ...m, id: msg.id } : m
-                );
-              });
+              setMessages(prev =>
+                prev.map(m =>
+                  m.tempId === msg.tempId
+                    ? { ...msg, id: msg.id }
+                    : m
+                )
+              );
 
               if (msg.to !== cu) {
                 setContacts(prev => {
-                  const idx = prev.findIndex(c => c.userID === msg.to);
-                  let updated = [...prev];
-
+                  const idx = prev.findIndex(c => c.id === msg.to);
+                  const updated = [...prev];
                   if (idx >= 0) {
                     const updatedContact = {
                       ...updated[idx],
@@ -165,7 +194,7 @@ export default function ChatBoxPage() {
                     updated.unshift(updatedContact);
                   } else {
                     updated.unshift({
-                      userID: msg.to,
+                      id: msg.to,
                       username: msg.to,
                       avatar: DEFAULT_AVATAR,
                       last_message: preview,
@@ -173,29 +202,31 @@ export default function ChatBoxPage() {
                       unread_count: 0
                     });
                   }
-
                   return updated;
                 });
               }
-
               return;
-            } else {
+            }
+            else {
               const belongsToCurrentConversation =
                 (msg.from === tu && msg.to === cu) || (msg.from === cu && msg.to === tu);
 
               if (belongsToCurrentConversation) {
-                setMessages(prev => [...prev, { ...msg, id: msg.id || uuidv4() }]);
+                setMessages(prev => {
+                  // xoá bất kỳ message cũ nào có id trùng BE trả về
+                  const filtered = prev.filter(m => m.id !== msg.id);
+                  return [...filtered, { ...msg, id: msg.id || uuidv4() }];
+                });
 
-                if (msg.from !== cu && ws && ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "seen", with: msg.from }));
+                if (msg.from !== cu && ws?.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'seen', with: msg.from }));
                 }
               }
 
-              // ✏️ Cập nhật contact người gửi (msg.from)
+              // update contacts ...
               setContacts(prev => {
-                const idx = prev.findIndex(c => c.userID === msg.from);
-                let updated = [...prev];
-
+                const idx = prev.findIndex(c => c.id === msg.from);
+                const updated = [...prev];
                 if (idx >= 0) {
                   const updatedContact = {
                     ...updated[idx],
@@ -203,22 +234,21 @@ export default function ChatBoxPage() {
                     last_message_at: now,
                     avatar: msg.avatar || updated[idx].avatar,
                     unread_count: (tu !== msg.from)
-                      ? ((updated[idx] as any).unread_count || 0) + 1
-                      : 0
+                      ? (updated[idx].unread_count ?? 0) + 1
+                      : 0,
                   };
                   updated.splice(idx, 1);
                   updated.unshift(updatedContact);
                 } else {
                   updated.unshift({
-                    userID: msg.from,
+                    id: msg.from,
                     username: msg.from,
                     avatar: msg.avatar || DEFAULT_AVATAR,
                     last_message: preview,
                     last_message_at: now,
-                    unread_count: (tu !== msg.from) ? 1 : 0
+                    unread_count: (tu !== msg.from) ? 1 : 0,
                   });
                 }
-
                 return updated;
               });
             }
@@ -234,46 +264,50 @@ export default function ChatBoxPage() {
             );
           }
           if (msg.type === "avatar_changed") {
+            const raw = msg.avatar;                      // vd: "/static/abc.jpg"
+            const full = raw.startsWith("http") ? raw : `${API_BASE}${raw}`;
+            localStorage.setItem(`avatar_${msg.from}`, full);
+
             if (msg.from === currentUserRef.current) {
-              localStorage.setItem("avatar", msg.avatar);
-              setUserAvatar(msg.avatar.startsWith("http") ? msg.avatar : `${API_BASE}${msg.avatar}`);
+              setUserAvatar(full);
             }
 
             setContacts(prev =>
-              prev.map(c =>
-                c.username === msg.from ? { ...c, avatar: msg.avatar } : c
-              )
+              prev.map(c => c.id === msg.from ? { ...c, avatar: full } : c)
             );
-            return;
           }
 
+
+
           if (msg.type === 'contacts') {
-            const normalized = (msg.contacts || []).map((c: any) => ({
-              userID: c.id || c.ID,
-              username: c.username || c.Username || '',
-              avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
+            const normalized: Contact[] = (msg.contacts || []).map((c: Contact) => ({
+              id: c.id || '',
+              username: c.username || '',
+              avatar: c.avatar || DEFAULT_AVATAR,
               last_message: c.last_message,
               last_message_at: c.last_message_at,
-              unread_count: c.unread_count || c.UnreadCount || 0,
+              unread_count: c.unread_count || 0,
               status: c.status,
-            })).filter((c: any) => c.username);
+            })).filter((c: Contact) => c.username);
 
             setContacts(prev => {
               const map = new Map<string, Contact>();
-              prev.forEach(p => map.set(p.username, { ...p }));
-              normalized.forEach((n: any) => {
-                const exist = map.get(n.username);
-                if (exist) map.set(n.username, { ...exist, ...n });
-                else map.set(n.username, n);
+              prev.forEach(p => map.set(p.id, { ...p }));
+              normalized.forEach(n => {
+                const exist = map.get(n.id);
+                if (exist) map.set(n.id, { ...exist, ...n });
+                else map.set(n.id, n);
               });
-              return Array.from(map.values()).sort((a, b) => (b.last_message_at || 0) - (a.last_message_at || 0));
+              return Array.from(map.values())
+                .sort((a, b) => (b.last_message_at || 0) - (a.last_message_at || 0));
             });
 
             return;
           }
 
+
           if (msg.type === 'history') {
-            const history: Message[] = (msg.messages || []).map((m: any) => ({
+            const history: Message[] = (msg.messages || []).map((m: Message) => ({
               id: m.id || uuidv4(),
               from: m.from,
               to: m.to,
@@ -289,12 +323,30 @@ export default function ChatBoxPage() {
               });
             } else {
               const prevHeight = historyScrollRef.current!.scrollHeight;
-              setMessages(prev => [...history, ...prev]);
+              setMessages(prev => {
+                const existingIds = new Set(prev.map((m) => m.id));
+                const filtered = history.filter((m) => !existingIds.has(m.id));
+
+                if (filtered.length === 0) {
+                  historyPageRef.current += 1;
+                  ws?.send(JSON.stringify({
+                    type: "load_history",
+                    with: toUser,
+                    page: historyPageRef.current,
+                    page_size: 20
+                  }));
+                  return prev;
+                }
+
+                return [...filtered, ...prev];
+              });
+
               requestAnimationFrame(() => {
                 const newHeight = historyScrollRef.current!.scrollHeight;
                 historyScrollRef.current!.scrollTop = newHeight - prevHeight;
               });
             }
+
 
             return;
           }
@@ -307,7 +359,7 @@ export default function ChatBoxPage() {
           if (msg.type === 'set_online') {
             setContacts(prev =>
               prev.map(c =>
-                c.userID === msg.from ? { ...c, status: 'online' } : c
+                c.id === msg.from ? { ...c, status: 'online' } : c
               )
             );
             return;
@@ -316,7 +368,7 @@ export default function ChatBoxPage() {
           if (msg.type === 'set_offline') {
             setContacts(prev =>
               prev.map(c =>
-                c.userID === msg.from ? { ...c, status: 'offline' } : c
+                c.id === msg.from ? { ...c, status: 'offline' } : c
               )
             );
             return;
@@ -331,11 +383,11 @@ export default function ChatBoxPage() {
           }
 
           if (msg.type === 'search_results') {
-            const normalized: Contact[] = (msg.contacts || []).map((c: any) => ({
-              userID: c.id || c.ID,
-              username: c.username || c.Username || '',
-              avatar: c.avatar || c.Avatar || DEFAULT_AVATAR,
-              status: c.status || c.Status || 'offline',
+            const normalized: Contact[] = (msg.contacts || []).map((c: Contact) => ({
+              userID: c.id || '',
+              username: c.username || '',
+              avatar: c.avatar || DEFAULT_AVATAR,
+              status: c.status || 'offline',
             })).filter((c: Contact) => c.username);
             setSearchResults(normalized);
             return;
@@ -361,10 +413,9 @@ export default function ChatBoxPage() {
 
     const tryReconnect = () => {
       if (reconnectAttempts >= maxReconnectAttempts) {
-        console.error('[WS] Đã vượt quá số lần thử kết nối lại');
+        console.error("[WS] Đã vượt quá số lần thử kết nối lại");
         return;
       }
-
       const delay = Math.min(5000 * (reconnectAttempts + 1), 30000);
       console.log(`[WS] Thử kết nối lại sau ${delay / 1000}s...`);
 
@@ -374,26 +425,17 @@ export default function ChatBoxPage() {
       }, delay);
     };
 
-    const cleanup = () => {
-      pingInterval && clearInterval(pingInterval);
-      reconnectTimeout && clearTimeout(reconnectTimeout);
-      pingInterval = null;
-      reconnectTimeout = null;
-      socket = null;
-      setWs(null);
-    };
-
     connect();
 
     return () => {
       cleanup();
-      socket?.close();
     };
   }, [token, currentUserID]);
 
 
   useEffect(() => {
     if (ws && ws.readyState === WebSocket.OPEN && toUser) {
+      console.log("load_history with:", toUser);
       ws.send(JSON.stringify({ type: 'load_history', with: toUser }));
     }
   }, [toUser, ws]);
@@ -410,7 +452,7 @@ export default function ChatBoxPage() {
       return;
     }
 
-    const tempId = uuidv4();
+    const tempId = 'tmp-' + uuidv4();           // tempId tách biệt hoàn toàn với id từ server
 
     const messageToSend = {
       tempId,
@@ -421,14 +463,12 @@ export default function ChatBoxPage() {
     };
 
     try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(messageToSend));
-      }
+      ws.send(JSON.stringify(messageToSend));
 
       setMessages(prev => [
         ...prev,
         {
-          id: tempId,
+          tempId,                   // dùng tempId để track thay vì dùng id
           type: 'text',
           from: currentUserID,
           to: toUser,
@@ -438,12 +478,10 @@ export default function ChatBoxPage() {
 
       setInput('');
     } catch (err) {
-      alert('Lỗi khi gửi tin nhắn: ' + ((err as any)?.message || 'Không thể gửi tin nhắn'));
+      const msg = (err as unknown as { message?: string })?.message ?? 'Không thể gửi tin nhắn';
+      alert('Lỗi khi gửi tin nhắn: ' + msg);
     }
   };
-
-
-
 
   const uploadFile = async (file: File, type: 'image' | 'video' | 'file' | 'voice') => {
     const formData = new FormData();
@@ -562,7 +600,8 @@ export default function ChatBoxPage() {
         mediaRecorder.start();
         setRecording(true);
       } catch (err) {
-        alert('Không thể ghi âm: ' + (err as any)?.message);
+        const msg = (err as unknown as { message?: string })?.message ?? 'Không thể ghi âm';
+        alert('Không thể ghi âm: ' + msg);
       }
     }
   };
@@ -590,7 +629,11 @@ export default function ChatBoxPage() {
   }) => {
     return (
       <div className={`flex items-end mb-3 ${isSelf ? 'justify-end' : 'justify-start'}`}>
-        {!isSelf && <img src={avatar} className="w-8 h-8 rounded-full mr-1" />}
+
+        {
+          !isSelf &&
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={avatar} alt="avatar" className="w-8 h-8 rounded-full mr-1" />}
         <div
           className={`rounded-2xl px-3 py-2 flex items-center ${isSelf ? 'bg-blue-600' : 'bg-gray-200'
             }`}
@@ -610,7 +653,10 @@ export default function ChatBoxPage() {
             ></span>
           </span>
         </div>
-        {isSelf && <img src={avatar} className="w-8 h-8 rounded-full ml-2" />}
+
+
+        {/* eslint-disable-next-line @next/next/no-img-element */
+          isSelf && <img src={avatar} alt="avatar" className="w-8 h-8 rounded-full ml-2" />}
       </div>
     );
   };
@@ -645,10 +691,10 @@ export default function ChatBoxPage() {
     setSearchQuery("");
     setSearchResults([]);
     historyPageRef.current = 0;
-
+    console.log("load_history with:", uid);
     setContacts(prev =>
       prev.map(c =>
-        c.userID === uid ? { ...c, unread_count: 0 } : c
+        c.id === uid ? { ...c, unread_count: 0 } : c
       )
     );
 
@@ -752,13 +798,15 @@ export default function ChatBoxPage() {
           />
         </div>
         <div className="flex-1 overflow-y-auto p-2">
-          {listToShow.map((contact, idx) => (
+          {listToShow.map((contact) => (
             <div
-              key={contact.userID}
-              onClick={() => handleSelectUser(contact.userID)}
+              key={contact.id}
+              onClick={() => handleSelectUser(contact.id)}
               className="flex items-center gap-2 p-2 hover:bg-gray-100 cursor-pointer"
             >
               <div className="relative w-10 h-10">
+
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={contact.avatar?.startsWith("http")
                     ? contact.avatar
@@ -785,6 +833,7 @@ export default function ChatBoxPage() {
         </div>
         <div className="p-3 border-t flex items-center justify-between">
           <div className="flex items-center gap-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={userAvatar}
               alt={username}
@@ -846,17 +895,20 @@ export default function ChatBoxPage() {
             const avatar =
               m.from === currentUserID
                 ? currentUserAvatar
-                : toUserContact?.avatar?.startsWith("http")
-                  ? toUserContact.avatar
-                  : `${API_BASE}${toUserContact?.avatar}` || DEFAULT_AVATAR;
+                : (localStorage.getItem(`avatar_${m.from}`)
+                  || contacts.find(c => c.id === m.from)?.avatar
+                  || DEFAULT_AVATAR);
             return (
 
               <div
-                key={m.tempId ? `temp-${m.tempId}` : `id-${m.id}`}
+                key={m.tempId ? `tmp-${m.tempId}` : `srv-${m.id}`}
                 className={`flex items-end mb-3 ${isSelf ? 'justify-end' : 'justify-start'}`}
               >
+
+
                 {!isSelf && (
-                  <img src={avatar} className="w-8 h-8 rounded-full mr-1" />
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={avatar} alt="avatar" className="w-8 h-8 rounded-full mr-1" />
                 )}
                 {isSelf && m.type !== 'deleted' && (
                   <Menu as="div" className="relative ml-1">
@@ -881,6 +933,8 @@ export default function ChatBoxPage() {
                 )}
                 <div className="relative flex items-center">
                   {m.type === 'image' ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+
                     <img src={`${API_BASE}${m.content}`} className="max-w-xs rounded" />
                   ) : m.type === 'video' ? (
                     <video controls className="max-w-xs rounded">
@@ -938,7 +992,8 @@ export default function ChatBoxPage() {
 
 
                 {isSelf && (
-                  <img src={currentUserAvatar} className="w-8 h-8 rounded-full ml-2" />
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={currentUserAvatar} alt="avatar" className="w-8 h-8 rounded-full ml-2" />
                 )}
               </div>
             );
@@ -947,7 +1002,7 @@ export default function ChatBoxPage() {
           {typingUser === toUser && (
             <TypingIndicator
               avatar={
-                `${API_BASE}${contacts.find((c) => c.username === typingUser)?.avatar}` ||
+                `${API_BASE}${contacts.find((c) => c.id === typingUser)?.avatar}` ||
                 DEFAULT_AVATAR
               }
               isSelf={false}

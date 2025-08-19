@@ -73,7 +73,7 @@ export default function LoginPage() {
             if (res.ok) {
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('username', login);
-                localStorage.setItem('userID', data.user_id);   
+                localStorage.setItem('userID', data.user_id);
                 localStorage.setItem(
                     "avatar",
                     data.avatar_url && data.avatar_url.startsWith("/static/")
