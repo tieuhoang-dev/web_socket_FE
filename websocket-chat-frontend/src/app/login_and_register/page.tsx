@@ -2,10 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { getApiBase } from '@/app/config';
 
-const API_BASE = 'http://localhost:8080';
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
-const AVATAR_PREFIX = 'http://localhost:8080/static/';
 
 type UserPreview = {
     username: string;
@@ -15,6 +14,10 @@ type UserPreview = {
 
 export default function LoginPage() {
     const router = useRouter();
+    const [apiBase, setApiBase] = useState('http://localhost:8080');
+    useEffect(() => {
+        getApiBase().then(setApiBase);
+    }, []);
     const [mode, setMode] = useState<'login' | 'register'>('login');
     const [login, setLogin] = useState('');
     const [password, setPassword] = useState('');
@@ -40,7 +43,7 @@ export default function LoginPage() {
 
         const avatar =
             avatarUrl && avatarUrl.startsWith('/static/')
-                ? `${API_BASE}${avatarUrl}`
+                ? `${apiBase}${avatarUrl}`
                 : avatarUrl || DEFAULT_AVATAR;
 
         list.unshift({
@@ -62,7 +65,7 @@ export default function LoginPage() {
 
     const handleLogin = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/login`, {
+            const res = await fetch(`${apiBase}/api/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ login, password }),
@@ -77,7 +80,7 @@ export default function LoginPage() {
                 localStorage.setItem(
                     "avatar",
                     data.avatar_url && data.avatar_url.startsWith("/static/")
-                        ? `${API_BASE}${data.avatar_url}`
+                        ? `${apiBase}${data.avatar_url}`
                         : data.avatar_url || DEFAULT_AVATAR
                 );
                 if (!data.avatar_url || !data.avatar_url.startsWith('/static/')) {
@@ -99,7 +102,7 @@ export default function LoginPage() {
 
     const handleRegister = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/register`, {
+            const res = await fetch(`${apiBase}/api/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: login, password, email }),

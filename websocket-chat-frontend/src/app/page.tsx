@@ -30,7 +30,7 @@ type Contact = {
   status?: string;
 };
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
-const API_BASE = 'http://localhost:8080';
+const API_BASE = 'https://evenly-patient-squirrel.ngrok-free.app';
 
 export default function ChatBoxPage() {
   const [ws, setWs] = useState<WebSocket | null>(null);

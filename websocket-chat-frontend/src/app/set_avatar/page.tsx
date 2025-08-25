@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { getApiBase, withApiBaseAsync } from '@/app/config';
 
 type UserPreview = {
     username: string;
@@ -9,7 +10,7 @@ type UserPreview = {
     lastLogin: string;
 };
 
-const API_BASE = 'http://localhost:8080';
+// API base is resolved dynamically via getApiBase where needed
 
 export default function SetAvatarPage() {
     const router = useRouter();
@@ -23,15 +24,16 @@ export default function SetAvatarPage() {
             setUid(localStorage.getItem('userID') || '');
 
             const token = localStorage.getItem('token')!;
-            // tạo kết nối websocket
-            const ws = new WebSocket(`ws://localhost:8080/ws?token=${token}`);
-            wsRef.current = ws;
-
-            ws.onopen = () => console.log('WS connected from setAvatar page');
-            ws.onclose = () => console.log('WS closed (setAvatar page)');
+            // tạo kết nối websocket dựa trên URL BE thực tế (ngrok)
+            getApiBase().then((base) => {
+                const w = new WebSocket(`${base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                wsRef.current = w;
+                w.onopen = () => console.log('WS connected from setAvatar page');
+                w.onclose = () => console.log('WS closed (setAvatar page)');
+            });
 
             return () => {
-                ws.close();
+                wsRef.current?.close();
             };
         }
     }, []);
@@ -57,7 +59,8 @@ export default function SetAvatarPage() {
             const formData = new FormData();
             formData.append('avatar', avatar);
 
-            const res = await fetch(`${API_BASE}/api/avatar`, {
+            const url = await withApiBaseAsync('/api/avatar');
+            const res = await fetch(url, {
                 method: 'POST',
                 body: formData,
                 headers: {
