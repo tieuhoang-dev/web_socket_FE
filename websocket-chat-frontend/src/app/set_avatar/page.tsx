@@ -9,7 +9,7 @@ type UserPreview = {
     lastLogin: string;
 };
 
-const API_BASE = 'http://localhost:8080';
+const API_BASE = 'https://evenly-patient-squirrel.ngrok-free.app';
 
 export default function SetAvatarPage() {
     const router = useRouter();

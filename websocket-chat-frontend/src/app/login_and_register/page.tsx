@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-const API_BASE = 'http://localhost:8080';
+const API_BASE = 'https://evenly-patient-squirrel.ngrok-free.app';
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
-const AVATAR_PREFIX = 'http://localhost:8080/static/';
+const AVATAR_PREFIX = 'https://evenly-patient-squirrel.ngrok-free.app/static/';
 
 type UserPreview = {
     username: string;

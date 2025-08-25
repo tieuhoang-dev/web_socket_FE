@@ -30,7 +30,7 @@ type Contact = {
   status?: string;
 };
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
-const API_BASE = 'http://localhost:8080';
+const API_BASE = 'https://evenly-patient-squirrel.ngrok-free.app';
 
 export default function ChatBoxPage() {
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -811,6 +811,7 @@ export default function ChatBoxPage() {
                   src={contact.avatar?.startsWith("http")
                     ? contact.avatar
                     : `${API_BASE}${contact.avatar}`}
+
                   alt={contact.username}
                   className="w-10 h-10 rounded-full"
                 />
@@ -896,7 +897,7 @@ export default function ChatBoxPage() {
               m.from === currentUserID
                 ? currentUserAvatar
                 : (localStorage.getItem(`avatar_${m.from}`)
-                  || contacts.find(c => c.id === m.from)?.avatar
+                  || `${API_BASE}${contacts.find(c => c.id === m.from)?.avatar}`
                   || DEFAULT_AVATAR);
             return (
 
